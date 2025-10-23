@@ -10,7 +10,7 @@ class ZnnEthUniswapPool(object):
 
     # Constants
     BITQUERY_API_URL = 'https://graphql.bitquery.io'
-    ETHER_SCAN_API_URL = 'https://api.etherscan.io/api'
+    ETHER_SCAN_API_URL = 'https://api.etherscan.io/v2/api?chainid=1'
 
     POOL_ADDRESS = '0xdac866A3796F85Cb84A914d98fAeC052E3b5596D'
     WETH_ADDRESS = '0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2'
@@ -50,8 +50,8 @@ class ZnnEthUniswapPool(object):
         timestamp = math.trunc(time.time())
 
         if r is None or len(r['weth_data']) == 0 or len(r['wznn_data']) == 0 or r['timestamp'] + 590 < timestamp:
-            r_weth = await HttpWrapper.get(f'{self.ETHER_SCAN_API_URL}?module=account&action=tokenbalance&contractaddress={self.WETH_ADDRESS}&address={self.POOL_ADDRESS}&tag=latest&apikey={self.ether_scan_api_key}')
-            r_wznn = await HttpWrapper.get(f'{self.ETHER_SCAN_API_URL}?module=account&action=tokenbalance&contractaddress={self.WZNN_ADDRESS}&address={self.POOL_ADDRESS}&tag=latest&apikey={self.ether_scan_api_key}')
+            r_weth = await HttpWrapper.get(f'{self.ETHER_SCAN_API_URL}&module=account&action=tokenbalance&contractaddress={self.WETH_ADDRESS}&address={self.POOL_ADDRESS}&tag=latest&apikey={self.ether_scan_api_key}')
+            r_wznn = await HttpWrapper.get(f'{self.ETHER_SCAN_API_URL}&module=account&action=tokenbalance&contractaddress={self.WZNN_ADDRESS}&address={self.POOL_ADDRESS}&tag=latest&apikey={self.ether_scan_api_key}')
 
             if 'result' in r_weth and 'result' in r_wznn:
                 self.__write_to_file_as_json(
@@ -81,7 +81,7 @@ class ZnnEthUniswapPool(object):
         timestamp = math.trunc(time.time())
 
         if r is None or len(r['data']) == 0 or r['timestamp'] + 590 < timestamp:
-            r = await HttpWrapper.get(f'{self.ETHER_SCAN_API_URL}?module=stats&action=tokensupply&contractaddress={self.POOL_ADDRESS}&apikey={self.ether_scan_api_key}')
+            r = await HttpWrapper.get(f'{self.ETHER_SCAN_API_URL}&module=stats&action=tokensupply&contractaddress={self.POOL_ADDRESS}&apikey={self.ether_scan_api_key}')
 
             if 'result' in r:
                 self.__write_to_file_as_json(
@@ -125,7 +125,7 @@ class ZnnEthUniswapPool(object):
         data = self.__read_file(file)
         timestamp = math.trunc(time.time())
 
-        if data is None or data['timestamp'] + 590 < timestamp:
+        if data is None or data['timestamp'] + 3590 < timestamp:
             r = await HttpWrapper.post(self.BITQUERY_API_URL, body, headers={
                 'Content-type': 'application/json',
                 'X-API-KEY': self.bitquery_api_key
