@@ -150,22 +150,36 @@ async def update():
         write_to_file_as_json(
             {'znn': {'timestamp': 0, 'usd': [], 'eur': [], 'gbp': [], 'cad': [], 'aud': []}, }, f'{DATA_STORE_DIR}/market_history_cache.json')
 
-    # Get coin prices.
-    market = MarketWrapper()
-    znn_price = await market.get_price_usd(coin='zenon-2')
-    qsr_price = round(znn_price / 10, 2)
-    eth_price = await market.get_price_usd(coin='ethereum')
+    # Get coin prices. Respect market_cache TTL to avoid hammering CoinGecko.
+    # The SPA also polls CoinGecko directly; free tier is ~10-30 req/min total.
+    market = MarketWrapper(api_key=cfg.get('coin_gecko_api_key', ''))
+    market_cache = read_file(f'{DATA_STORE_DIR}/market_cache.json') if os.path.exists(f'{DATA_STORE_DIR}/market_cache.json') else None
+    # 5 min TTL: CoinGecko free tier rate-limits hard (and stays mad). Two
+    # price fetches per cycle × 12 cycles/hour with this TTL = 24 calls/hour,
+    # leaves plenty of budget for the SPA's direct CoinGecko calls.
+    price_refresh_interval_secs = 300
 
-    # If bad response use cached price data, else cache the new data.
-    if znn_price == 0 or eth_price == 0:
-        market_cache = read_file(
-            f'{DATA_STORE_DIR}/market_cache.json')
+    if market_cache and market_cache.get('timestamp', 0) + price_refresh_interval_secs > math.trunc(time.time()):
+        # Cache is fresh; reuse it.
         znn_price = market_cache['znn_price_usd']
         qsr_price = market_cache['qsr_price_usd']
         eth_price = market_cache['eth_price_usd']
+        print('Used market cache (fresh)')
     else:
-        write_to_file_as_json({'timestamp': math.trunc(time.time()), 'znn_price_usd': znn_price, 'qsr_price_usd': qsr_price, 'eth_price_usd': eth_price},
-                              f'{DATA_STORE_DIR}/market_cache.json')
+        znn_price = await market.get_price_usd(coin='zenon-2')
+        qsr_price = round(znn_price / 10, 2)
+        eth_price = await market.get_price_usd(coin='ethereum')
+
+        # If bad response use cached price data, else cache the new data.
+        if znn_price == 0 or eth_price == 0:
+            if market_cache is None:
+                market_cache = read_file(f'{DATA_STORE_DIR}/market_cache.json')
+            znn_price = market_cache['znn_price_usd']
+            qsr_price = market_cache['qsr_price_usd']
+            eth_price = market_cache['eth_price_usd']
+        else:
+            write_to_file_as_json({'timestamp': math.trunc(time.time()), 'znn_price_usd': znn_price, 'qsr_price_usd': qsr_price, 'eth_price_usd': eth_price},
+                                  f'{DATA_STORE_DIR}/market_cache.json')
 
     # Update price history data
     market_history_cache = read_file(
@@ -218,7 +232,7 @@ async def main():
         print(f'{str(datetime.datetime.now())}: Starting')
         await update()
         print(f'{str(datetime.datetime.now())}: Completed')
-        time.sleep(10)
+        time.sleep(60)
 
 
 if __name__ == '__main__':

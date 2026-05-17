@@ -336,10 +336,13 @@ class NomData(object):
 
     async def __update_bonus_orbital_rewards(self):
         r = await HttpWrapper.post(self.node_url, self.__create_request('embedded.liquidity.getLiquidityInfo'))
-        self.yearly_znn_bonus_reward_pool_for_lps = (int(r['result']['znnReward']) /
-                                                     self.DECIMALS) * self.DAYS_PER_YEAR
-        self.yearly_qsr_bonus_reward_pool_for_lps = (int(r['result']['qsrReward']) /
-                                                     self.DECIMALS) * self.DAYS_PER_YEAR
+        try:
+            self.yearly_znn_bonus_reward_pool_for_lps = (int(r['result']['znnReward']) /
+                                                         self.DECIMALS) * self.DAYS_PER_YEAR
+            self.yearly_qsr_bonus_reward_pool_for_lps = (int(r['result']['qsrReward']) /
+                                                         self.DECIMALS) * self.DAYS_PER_YEAR
+        except (KeyError, TypeError):
+            print('Error: __update_bonus_orbital_rewards')
 
     async def __update_sentinel_data(self):
         r = await HttpWrapper.post(self.node_url, self.__create_request('embedded.sentinel.getAllActive', [0, 1000]))

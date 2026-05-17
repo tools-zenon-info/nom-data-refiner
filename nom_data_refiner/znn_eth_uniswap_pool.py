@@ -9,7 +9,7 @@ from utils.http_wrapper import HttpWrapper
 class ZnnEthUniswapPool(object):
 
     # Constants
-    BITQUERY_API_URL = 'https://graphql.bitquery.io'
+    BITQUERY_API_URL = 'https://streaming.bitquery.io/graphql'
     ETHER_SCAN_API_URL = 'https://api.etherscan.io/v2/api?chainid=1'
 
     POOL_ADDRESS = '0xdac866A3796F85Cb84A914d98fAeC052E3b5596D'
@@ -105,21 +105,33 @@ class ZnnEthUniswapPool(object):
         week_ago = now - timedelta(days=self.MOVING_AVERAGE_LENGTH_IN_DAYS)
         week_ago = week_ago.strftime('%Y-%m-%dT%H:%M:%SZ')
 
-        trades_query_params = f'dexTrades(options: {{ desc: "date.date" }} time: {{ since: "{week_ago}" }} smartContractAddress: {{ is: "{self.POOL_ADDRESS}" }})'
-        trades_query_subfields = '{ date { date(format: "%y-%m-%d") } tradeAmount(in:USD) }'
-        balances_query_params = f'address(address: {{ is: "{self.POOL_ADDRESS}" }} )'
-        balances_query_subfields = '{ balances { currency { symbol } value } }'
-        start_reserves_query_params = f'startReserves: smartContractEvents(smartContractAddress: {{ is: "{self.POOL_ADDRESS}" }}  options: {{ limit: 1, asc: "block.height" }} smartContractEvent: {{ is: "Sync" }} time: {{ since: "{week_ago}" }} )'
-        start_reserves_query_subfields = '{ arguments { value argument } block { height } }'
-        end_reserves_query_params = f'endReserves: smartContractEvents(smartContractAddress: {{ is: "{self.POOL_ADDRESS}" }}  options: {{ limit: 1, desc: "block.height" }} smartContractEvent: {{ is: "Sync" }} )'
-        end_reserves_query_subfields = '{ arguments { value argument } block { height } }'
-
-        body = {
-            'query': '{ ethereum(network: ethereum) {' + trades_query_params + ' ' + trades_query_subfields + ' '
-            + balances_query_params + ' ' + balances_query_subfields
-            + start_reserves_query_params + ' ' + start_reserves_query_subfields
-            + end_reserves_query_params + ' ' + end_reserves_query_subfields
-            + '} }'}
+        # Migrated to Bitquery v2 (streaming.bitquery.io). The legacy v1
+        # smartContractEvents API table was decommissioned server-side.
+        reserves_subfields = (
+            'Arguments { Name Value { '
+            '... on EVM_ABI_BigInt_Value_Arg { bigInteger } '
+            '} }'
+        )
+        query = (
+            'query { EVM(dataset: combined, network: eth) {'
+            f'  dexTrades: DEXTrades('
+            f'    where: {{ Trade: {{ Dex: {{ SmartContract: {{ is: "{self.POOL_ADDRESS}" }} }} }}'
+            f'             Block: {{ Time: {{ since: "{week_ago}" }} }} }}'
+            f'  ) {{ sum(of: Trade_Buy_AmountInUSD) }}'
+            f'  startReserves: Events('
+            f'    where: {{ Log: {{ SmartContract: {{ is: "{self.POOL_ADDRESS}" }}'
+            f'                      Signature: {{ Name: {{ is: "Sync" }} }} }}'
+            f'             Block: {{ Time: {{ since: "{week_ago}" }} }} }}'
+            f'    orderBy: {{ ascending: Block_Number }} limit: {{ count: 1 }}'
+            f'  ) {{ {reserves_subfields} }}'
+            f'  endReserves: Events('
+            f'    where: {{ Log: {{ SmartContract: {{ is: "{self.POOL_ADDRESS}" }}'
+            f'                      Signature: {{ Name: {{ is: "Sync" }} }} }} }}'
+            f'    orderBy: {{ descending: Block_Number }} limit: {{ count: 1 }}'
+            f'  ) {{ {reserves_subfields} }}'
+            '} }'
+        )
+        body = {'query': query}
 
         file = f'{self.data_store_dir}/znn_eth_pool_data_cache.json'
         data = self.__read_file(file)
@@ -128,34 +140,37 @@ class ZnnEthUniswapPool(object):
         if data is None or data['timestamp'] + 3590 < timestamp:
             r = await HttpWrapper.post(self.BITQUERY_API_URL, body, headers={
                 'Content-type': 'application/json',
-                'X-API-KEY': self.bitquery_api_key
+                'Authorization': f'Bearer {self.bitquery_api_key}'
             })
-            if 'data' in r:
+            if r and 'data' in r and r.get('data'):
                 self.__write_to_file_as_json(
                     {'data': r, 'timestamp': timestamp}, file)
                 print('Refreshed pool data')
                 data = r
-            else:
+            elif data is not None:
                 data = data['data']
                 print('Refresh failed. Used pool data cache')
+            else:
+                print('Error: __update_pool_data (no data and no cache)')
+                return
         else:
             data = data['data']
             print('Used pool data cache')
 
         try:
-            self.weekly_volume_usd = 0
-            for day_data in data['data']['ethereum']['dexTrades']:
-                self.weekly_volume_usd = self.weekly_volume_usd + \
-                    float(day_data['tradeAmount'])
+            evm = data['data']['EVM']
 
-            wznn_reserve_end = float(
-                data['data']['ethereum']['endReserves'][0]['arguments'][0]['value']) / 100000000
-            weth_reserve_end = float(
-                data['data']['ethereum']['endReserves'][0]['arguments'][1]['value']) / 1000000000000000000
-            wznn_reserve_start = float(
-                data['data']['ethereum']['startReserves'][0]['arguments'][0]['value']) / 100000000
-            weth_reserve_start = float(
-                data['data']['ethereum']['startReserves'][0]['arguments'][1]['value']) / 1000000000000000000
+            sum_row = evm['dexTrades'][0] if evm['dexTrades'] else {}
+            self.weekly_volume_usd = float(sum_row['sum']) if sum_row.get('sum') else 0
+
+            end_args = evm['endReserves'][0]['Arguments']
+            start_args = evm['startReserves'][0]['Arguments']
+
+            # Sync event emits (reserve0, reserve1). For this pool reserve0=WZNN (8 dec), reserve1=WETH (18 dec).
+            wznn_reserve_end = float(end_args[0]['Value']['bigInteger']) / 100000000
+            weth_reserve_end = float(end_args[1]['Value']['bigInteger']) / 1000000000000000000
+            wznn_reserve_start = float(start_args[0]['Value']['bigInteger']) / 100000000
+            weth_reserve_start = float(start_args[1]['Value']['bigInteger']) / 1000000000000000000
 
             self.yearly_trading_fees_usd = self.weekly_volume_usd * \
                 self.POOL_REWARD_FEE_SHARE / self.MOVING_AVERAGE_LENGTH_IN_DAYS * self.DAYS_PER_YEAR
@@ -163,7 +178,7 @@ class ZnnEthUniswapPool(object):
             self.impermanent_loss = self.__calculate_impermanent_loss(
                 wznn_reserve_start, weth_reserve_start, wznn_reserve_end, weth_reserve_end)
 
-        except KeyError:
+        except (KeyError, IndexError, TypeError):
             print('Error: __update_pool_data')
 
     def __calculate_impermanent_loss(self, token_reserve_start, base_reserve_start, token_reserve_end, base_reserve_end):
